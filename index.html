@@ -1,0 +1,619 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <title>Checklist de Campo</title>
+    
+    <!-- LINK PARA O MANIFESTO (Aplicativo Instalável) -->
+    <link rel="manifest" href="manifest.json">
+    
+    <!-- REGISTRO DO SERVICE WORKER (Para funcionar offline) -->
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('sw.js');
+        });
+      }
+    </script>
+
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- BIBLIOTECA PARA SALVAR DADOS OFFLINE (IndexedDB) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/localforage/1.10.0/localforage.min.js"></script>
+
+    <style>
+        body { background-color: #121212; color: #e0e0e0; padding-bottom: 50px; }
+        .card { background-color: #1e1e1e; border: 1px solid #333; box-shadow: 0 4px 6px rgba(0,0,0,0.5); border-radius: 10px; margin-bottom: 20px; }
+        .card-header { background-color: #000; color: #fff; border-bottom: 1px solid #333; font-weight: bold; border-radius: 10px 10px 0 0 !important; }
+        .form-control { background-color: #2c2c2c; border: 1px solid #444; color: #fff; }
+        .form-control:focus { background-color: #383838; border-color: #777; color: #fff; box-shadow: none; }
+        ::-webkit-calendar-picker-indicator { filter: invert(1); }
+        .form-label { color: #bbb; font-size: 14px;}
+        .item-box { background-color: #181818; border: 1px solid #333 !important; }
+        .btn-primary { background-color: #333; border-color: #555; color: #fff; }
+        .btn-primary:hover { background-color: #444; border-color: #666; }
+        
+        #loadingOverlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 1050; flex-direction: column; justify-content: center; align-items: center; color: white; text-align: center; padding: 20px;}
+        .foto-preview { max-width: 100%; height: auto; max-height: 250px; display: none; margin-top: 10px; border-radius: 8px; object-fit: contain; }
+        #logoImg { max-width: 100%; height: auto; max-height: 70px; }
+        
+        #signatureCanvas { cursor: crosshair; touch-action: none; background-color: #fff; }
+        
+        /* Barra de Sincronização Fixa */
+        #syncBanner { display: none; position: sticky; top: 0; z-index: 1000; background-color: #ff9800; color: #000; font-weight: bold; text-align: center; padding: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); border-radius: 0 0 10px 10px; margin-bottom: 15px;}
+        
+        @media (min-width: 768px) {
+            .form-container { max-width: 700px; margin: auto; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- BARRA DE AVISO OFFLINE / SINCRONIZAÇÃO -->
+<div id="syncBanner">
+    Você tem <span id="syncCount">0</span> formulário(s) salvo(s) offline no celular.
+    <br>
+    <button class="btn btn-sm btn-dark mt-2" onclick="sincronizarDados()">🔄 Sincronizar Agora (Requer Internet)</button>
+</div>
+
+<div class="container mt-3 form-container">
+    <div class="text-center mb-4">
+        <img id="logoImg" src="https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcT2y4RDy3dJMu1cyGiZwdmtHCopiNFuD2etAOmssdlvjO-k7JbJ9I_5LA&s=10" alt="Logo">
+    </div>
+
+    <h4 class="text-center mb-4" style="color:#fff;">Checklist de Campo<br><small style="font-size:14px; color:#aaa;">Trem de Força</small></h4>
+    
+    <form id="formChecklist">
+        <input type="hidden" id="gps" value="Buscando localização...">
+
+        <!-- 1. CABEÇALHO -->
+        <div class="card">
+            <div class="card-header">1. Informações Gerais</div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6 mb-3"><label class="form-label">Data da Inspeção *</label><input type="date" id="data" class="form-control" required></div>
+                    <div class="col-md-6 mb-3"><label class="form-label">Técnico Responsável *</label><input type="text" id="responsavel" class="form-control" required></div>
+                </div>
+                <div class="row">
+                    <div class="col-md-6 mb-3"><label class="form-label">Nº de Série *</label><input type="text" id="numSerie" class="form-control" required></div>
+                    <div class="col-md-6 mb-3"><label class="form-label">TAG do Equipamento *</label><input type="text" id="tag" class="form-control" required></div>
+                </div>
+                <div class="mb-3"><label class="form-label">Local *</label><input type="text" id="local" class="form-control" required></div>
+                
+                <div class="mb-3">
+                    <label class="form-label">E-mail(s) para receber PDF * <small class="text-warning">(separe por vírgula para mais de um)</small></label>
+                    <input type="text" id="email" class="form-control" value="" required>
+                </div>
+            </div>
+        </div>
+
+        <!-- 2. FOTOS INICIAIS -->
+        <div class="card">
+            <div class="card-header">2. Fotos Obrigatórias Iniciais</div>
+            <div class="card-body">
+                <p class="text-warning" style="font-size: 13px; font-weight: bold;">⚠️ Atenção: Todas as fotos devem possuir marca d'água.</p>
+                <div class="mb-3">
+                    <label class="form-label">Painel (Horímetro e Data) *</label>
+                    <input type="file" id="fotoPainel" accept="image/*" class="form-control" onchange="previewSingle(this, 'prevPainel')" required>
+                    <div class="text-center"><img id="prevPainel" class="foto-preview"></div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Placa (Nº de Série) *</label>
+                    <input type="file" id="fotoPlaca" accept="image/*" class="form-control" onchange="previewSingle(this, 'prevPlaca')" required>
+                    <div class="text-center"><img id="prevPlaca" class="foto-preview"></div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Equipamento *</label>
+                    <input type="file" id="fotoEquip" accept="image/*" class="form-control" onchange="previewSingle(this, 'prevEquip')" required>
+                    <div class="text-center"><img id="prevEquip" class="foto-preview"></div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Transmissão *</label>
+                    <input type="file" id="fotoTrans" accept="image/*" class="form-control" onchange="previewSingle(this, 'prevTrans')" required>
+                    <div class="text-center"><img id="prevTrans" class="foto-preview"></div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Motor *</label>
+                    <input type="file" id="fotoMotor" accept="image/*" class="form-control" onchange="previewSingle(this, 'prevMotor')" required>
+                    <div class="text-center"><img id="prevMotor" class="foto-preview"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 3. ITENS DE INSPEÇÃO -->
+        <div class="card">
+            <div class="card-header">3. Itens de Inspeção</div>
+            <div class="card-body p-2" id="itensContainer">
+                <!-- Gerado por Javascript -->
+            </div>
+        </div>
+
+        <!-- 4. OBSERVAÇÕES EXTRAS -->
+        <div class="card">
+            <div class="card-header">4. Conclusão</div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <label class="form-label">Observações Gerais</label>
+                    <textarea id="obsGerais" class="form-control" rows="3" placeholder="Insira observações gerais (opcional)"></textarea>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label text-warning" style="font-weight:bold; font-size: 13px;">📸 Fotos Adicionais (Opcional - Múltiplas com Marca D'água)</label>
+                    <input type="file" id="fotosExtras" class="form-control" accept="image/*" multiple onchange="previewMultiple(this, 'prevExtras')">
+                    <div id="prevExtras" class="d-flex flex-wrap mt-2 gap-2 justify-content-center"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 5. ASSINATURA -->
+        <div class="card">
+            <div class="card-header">5. Assinatura do Técnico</div>
+            <div class="card-body text-center">
+                <p class="form-label mb-2" style="font-size: 14px; color: #fff;">Assine no quadro abaixo usando o dedo ou mouse *</p>
+                <div style="background-color: #fff; display: inline-block; border-radius: 8px; border: 2px solid #555; overflow: hidden;">
+                    <canvas id="signatureCanvas" width="300" height="150"></canvas>
+                </div>
+                <div class="mt-3">
+                    <button type="button" class="btn btn-outline-danger btn-sm" onclick="limparAssinatura()">Limpar Assinatura</button>
+                </div>
+            </div>
+        </div>
+
+        <button type="submit" class="btn btn-primary w-100 py-3 fw-bold shadow" style="font-size: 1.1rem;">Enviar e gerar relatório</button>
+    </form>
+</div>
+
+<!-- TELA DE CARREGAMENTO -->
+<div id="loadingOverlay">
+    <div class="spinner-border text-light" style="width: 4rem; height: 4rem;" role="status"></div>
+    <h5 id="loadingText" class="mt-4 fw-bold">Processando imagens e salvando dados...</h5>
+</div>
+
+<script>
+    // Configuração do IndexedDB via localForage
+    localforage.config({
+        name: 'AppChecklist',
+        storeName: 'formularios_offline'
+    });
+
+    const URL_DO_LOGO = document.getElementById('logoImg').src;
+
+    const gruposDeInspecao = {
+      "Coxins / Suportes": [
+        "Coxins e suporte do Motor",
+        "Coxins laterais da transmissão",
+        "Suporte Transmissão"
+      ],
+      "Transmissão Allison": [
+        "Conexão Motor/Transmissão",
+        "Flange de Saída da Transmissão"
+      ],
+      "Cardãs e Juntas": [
+        "Cruzetas - Cardã (Transm./Dif. intermediário)",
+        "Cruzetas - Cardã entre eixos",
+        "Luva e Ponteira Estriada (Slip Yoke) - transm./dif. interm.",
+        "Luva e Ponteira Estriada (Slip Yoke) - cardan entre eixos"
+      ],
+      "Barras Tensoras": [
+        "Eixo Dianteiro",
+        "Eixo Intermediário",
+        "Eixo Traseiro"
+      ],
+      "Diferenciais": [
+        "Dif. Intermediário — Flange",
+        "Dif. Traseiro — Flange"
+      ]
+    };
+
+    const flatChecklistData = [];
+
+    // LÓGICA DA ASSINATURA
+    const canvas = document.getElementById('signatureCanvas');
+    const ctx = canvas.getContext('2d');
+    let isDrawing = false;
+    let isSignatureEmpty = true;
+
+    function initCanvas() {
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        isSignatureEmpty = true;
+    }
+
+    function getCoords(e) {
+        const rect = canvas.getBoundingClientRect();
+        let x, y;
+        if (e.touches && e.touches.length > 0) {
+            x = e.touches[0].clientX - rect.left;
+            y = e.touches[0].clientY - rect.top;
+        } else {
+            x = e.clientX - rect.left;
+            y = e.clientY - rect.top;
+        }
+        return {x, y};
+    }
+
+    function startDraw(e) {
+        e.preventDefault();
+        isDrawing = true;
+        const coords = getCoords(e);
+        ctx.beginPath();
+        ctx.moveTo(coords.x, coords.y);
+    }
+
+    function draw(e) {
+        if (!isDrawing) return;
+        e.preventDefault();
+        const coords = getCoords(e);
+        ctx.lineTo(coords.x, coords.y);
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 3;
+        ctx.lineCap = 'round';
+        ctx.stroke();
+        isSignatureEmpty = false;
+    }
+
+    function stopDraw(e) {
+        if (!isDrawing) return;
+        e.preventDefault();
+        isDrawing = false;
+    }
+
+    canvas.addEventListener('mousedown', startDraw);
+    canvas.addEventListener('mousemove', draw);
+    canvas.addEventListener('mouseup', stopDraw);
+    canvas.addEventListener('mouseout', stopDraw);
+
+    canvas.addEventListener('touchstart', startDraw, {passive: false});
+    canvas.addEventListener('touchmove', draw, {passive: false});
+    canvas.addEventListener('touchend', stopDraw);
+    canvas.addEventListener('touchcancel', stopDraw);
+
+    function limparAssinatura() {
+        initCanvas();
+    }
+
+    // INICIALIZAÇÃO
+    document.addEventListener("DOMContentLoaded", () => {
+        document.getElementById('data').valueAsDate = new Date();
+        capturarGPSAutomatico(); 
+        initCanvas(); 
+        atualizarBannerSync(); 
+        
+        const container = document.getElementById('itensContainer');
+        let globalIndex = 0;
+        
+        Object.keys(gruposDeInspecao).forEach(grupo => {
+            const htmlGrupo = `
+                <div class="mt-4 mb-3 p-2 rounded" style="background-color: #333; border-left: 5px solid #ff0000; color: #fff; font-weight: bold; font-size: 16px;">
+                    ${grupo.toUpperCase()}
+                </div>
+            `;
+            container.insertAdjacentHTML('beforeend', htmlGrupo);
+            
+            gruposDeInspecao[grupo].forEach((nomeItem) => {
+                const idx = globalIndex;
+                const html = `
+                    <div class="border rounded p-3 mb-3 item-box">
+                        <h6 class="mb-3" style="color: #fff; font-size: 15px;">Item ${idx + 1}: ${nomeItem}</h6>
+                        
+                        <div class="mb-3 d-flex gap-4">
+                            <div class="form-check">
+                                <input class="form-check-input" type="radio" name="status${idx}" id="ok${idx}" value="OK" onchange="toggleStatus(${idx})" required>
+                                <label class="form-check-label text-success fw-bold" for="ok${idx}">OK</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="radio" name="status${idx}" id="nok${idx}" value="NOK" onchange="toggleStatus(${idx})">
+                                <label class="form-check-label text-danger fw-bold" for="nok${idx}">NOK</label>
+                            </div>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label" style="font-size: 13px;" id="labelObs${idx}">Observações</label>
+                            <textarea class="form-control item-obs" rows="2" id="obs${idx}"></textarea>
+                        </div>
+
+                        <div style="background-color: #2a1111; padding: 10px; border-radius: 5px;">
+                            <label class="form-label text-warning" style="font-weight:bold; font-size: 13px;">📸 Inserir Fotos (Obrigatório - C/ Marca D'água)</label>
+                            <input type="file" class="form-control item-foto" id="foto${idx}" accept="image/*" multiple onchange="previewMultiple(this, 'prevItemMulti${idx}')" required>
+                            <div id="prevItemMulti${idx}" class="d-flex flex-wrap mt-2 gap-2 justify-content-center"></div>
+                        </div>
+                    </div>
+                `;
+                container.insertAdjacentHTML('beforeend', html);
+                
+                flatChecklistData.push({ grupo: grupo, nome: nomeItem, indexId: idx });
+                globalIndex++;
+            });
+        });
+    });
+
+    function capturarGPSAutomatico() {
+        if (navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition(
+                (pos) => { document.getElementById('gps').value = `${pos.coords.latitude}, ${pos.coords.longitude}`; },
+                (err) => { document.getElementById('gps').value = "Não autorizado / Indisponível"; },
+                { enableHighAccuracy: true }
+            );
+        } else {
+            document.getElementById('gps').value = "Sem suporte a GPS";
+        }
+    }
+
+    function toggleStatus(index) {
+        const isNok = document.getElementById(`nok${index}`).checked;
+        const inputObs = document.getElementById(`obs${index}`);
+        const labelObs = document.getElementById(`labelObs${index}`);
+        
+        if (isNok) {
+            inputObs.setAttribute('required', 'true');
+            labelObs.innerHTML = 'Observações <span class="text-danger fw-bold">(Obrigatório para NOK)</span>';
+        } else {
+            inputObs.removeAttribute('required');
+            labelObs.innerHTML = 'Observações';
+        }
+    }
+
+    function confirmarMarcaDagua(input) {
+        if (input.files && input.files.length > 0) {
+            const confirmacao = confirm("⚠️ AVISO DE SEGURANÇA ⚠️\n\nVocê confirma que a(s) foto(s) selecionada(s) possui(em) a marca d'água obrigatória?\n\nClique em 'OK' se sim, ou 'Cancelar' para escolher outra foto.");
+            if (!confirmacao) {
+                input.value = ""; 
+                return false; 
+            }
+        }
+        return true;
+    }
+
+    function previewSingle(input, previewId) {
+        if (!confirmarMarcaDagua(input)) {
+            document.getElementById(previewId).style.display = 'none';
+            document.getElementById(previewId).src = '';
+            return;
+        }
+
+        if (input.files && input.files[0]) {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const img = document.getElementById(previewId);
+                img.src = e.target.result;
+                img.style.display = 'block';
+            }
+            reader.readAsDataURL(input.files[0]);
+        }
+    }
+
+    function previewMultiple(input, containerId) {
+        const container = document.getElementById(containerId);
+        
+        if (!confirmarMarcaDagua(input)) {
+            container.innerHTML = '';
+            return;
+        }
+
+        container.innerHTML = '';
+        if (input.files) {
+            Array.from(input.files).forEach(file => {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    const img = document.createElement('img');
+                    img.src = e.target.result;
+                    img.style.maxHeight = '90px';
+                    img.style.maxWidth = '90px';
+                    img.style.objectFit = 'cover';
+                    img.style.borderRadius = '5px';
+                    container.appendChild(img);
+                }
+                reader.readAsDataURL(file);
+            });
+        }
+    }
+
+    function compressImage(file, max_width) {
+        return new Promise((resolve) => {
+            if (!file) { resolve(null); return; }
+            const reader = new FileReader();
+            reader.readAsDataURL(file);
+            reader.onload = event => {
+                const img = new Image();
+                img.src = event.target.result;
+                img.onload = () => {
+                    const canvas = document.createElement('canvas');
+                    const scaleSize = max_width / img.width;
+                    canvas.width = max_width;
+                    canvas.height = img.height * scaleSize;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                    resolve(canvas.toDataURL('image/jpeg', 0.8));
+                }
+            };
+        });
+    }
+
+    // EVENTO DE SALVAR (SUBMIT DO FORMULÁRIO)
+    document.getElementById('formChecklist').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        
+        if (isSignatureEmpty) {
+            alert("Por favor, preencha a sua assinatura no final do formulário.");
+            return;
+        }
+        
+        document.getElementById('loadingText').innerText = "Compactando imagens e salvando dados offline...";
+        document.getElementById('loadingOverlay').style.display = 'flex';
+
+        try {
+            const fotoPainelBase64 = await compressImage(document.getElementById('fotoPainel').files[0], 800);
+            const fotoPlacaBase64 = await compressImage(document.getElementById('fotoPlaca').files[0], 800);
+            const fotoEquipBase64 = await compressImage(document.getElementById('fotoEquip').files[0], 800);
+            const fotoTransBase64 = await compressImage(document.getElementById('fotoTrans').files[0], 800);
+            const fotoMotorBase64 = await compressImage(document.getElementById('fotoMotor').files[0], 800);
+            const assinaturaBase64 = canvas.toDataURL('image/jpeg', 0.8);
+
+            let dados = {
+                idRegistro: Date.now().toString(),
+                logoUrl: URL_DO_LOGO,
+                data: document.getElementById('data').value,
+                responsavel: document.getElementById('responsavel').value,
+                numSerie: document.getElementById('numSerie').value,
+                tag: document.getElementById('tag').value,
+                local: document.getElementById('local').value,
+                email: document.getElementById('email').value,
+                gps: document.getElementById('gps').value,
+                fotoPainel: fotoPainelBase64,
+                fotoPlaca: fotoPlacaBase64,
+                fotoEquip: fotoEquipBase64,
+                fotoTrans: fotoTransBase64,
+                fotoMotor: fotoMotorBase64,
+                assinatura: assinaturaBase64,
+                obsGerais: document.getElementById('obsGerais').value,
+                checklist: [],
+                fotosExtras: []
+            };
+
+            for (let i = 0; i < flatChecklistData.length; i++) {
+                let info = flatChecklistData[i];
+                let idx = info.indexId;
+                let statusVal = document.getElementById(`ok${idx}`).checked ? "OK" : (document.getElementById(`nok${idx}`).checked ? "NOK" : "");
+                let arquivosItem = document.getElementById(`foto${idx}`).files;
+                let fotosBase64Array = [];
+                
+                for (let a = 0; a < arquivosItem.length; a++) {
+                    let b64 = await compressImage(arquivosItem[a], 800);
+                    if (b64) fotosBase64Array.push(b64);
+                }
+                
+                dados.checklist.push({
+                    grupo: info.grupo,
+                    nome: info.nome,
+                    status: statusVal,
+                    obs: document.getElementById(`obs${idx}`).value,
+                    foto: fotosBase64Array 
+                });
+            }
+
+            const filesExtra = document.getElementById('fotosExtras').files;
+            for (let j = 0; j < filesExtra.length; j++) {
+                let b64 = await compressImage(filesExtra[j], 800);
+                if (b64) dados.fotosExtras.push(b64);
+            }
+
+            // SALVA OFFLINE NO INDEXEDDB
+            let fila = await localforage.getItem('fila_checklists') || [];
+            fila.push(dados);
+            await localforage.setItem('fila_checklists', fila);
+
+            // LIMPA O FORMULÁRIO
+            document.getElementById('formChecklist').reset();
+            limparAssinatura(); 
+            document.querySelectorAll('.foto-preview').forEach(img => { img.style.display = 'none'; img.src = ''; });
+            document.getElementById('prevExtras').innerHTML = '';
+            for(let i=0; i<flatChecklistData.length; i++) {
+                document.getElementById(`prevItemMulti${i}`).innerHTML = '';
+                document.getElementById(`labelObs${i}`).innerHTML = 'Observações';
+                document.getElementById(`obs${i}`).removeAttribute('required');
+            }
+            window.scrollTo(0,0);
+            
+            document.getElementById('loadingOverlay').style.display = 'none';
+            await atualizarBannerSync();
+
+            alert("✅ Formulário salvo no dispositivo!\n\nEle está seguro no celular. Para enviar para o sistema, clique em 'Sincronizar' quando tiver internet.");
+
+            if (navigator.onLine) {
+                sincronizarDados();
+            }
+
+        } catch(error) {
+            document.getElementById('loadingOverlay').style.display = 'none';
+            alert("Erro local ao processar imagens. Tente novamente. Erro: " + error);
+        }
+    });
+
+    // ------------------------------------------------------------------
+    // FUNÇÕES DE SINCRONIZAÇÃO VIA FETCH (COMUNICAÇÃO COM APPS SCRIPT)
+    // ------------------------------------------------------------------
+
+    async function atualizarBannerSync() {
+        let fila = await localforage.getItem('fila_checklists') || [];
+        const banner = document.getElementById('syncBanner');
+        if (fila.length > 0) {
+            document.getElementById('syncCount').innerText = fila.length;
+            banner.style.display = 'block';
+        } else {
+            banner.style.display = 'none';
+        }
+    }
+
+    window.addEventListener('online', () => {
+        localforage.getItem('fila_checklists').then(fila => {
+            if (fila && fila.length > 0) {
+                if(confirm("🌐 Internet detectada!\n\nVocê possui " + fila.length + " formulário(s) aguardando envio. Deseja sincronizar agora?")) {
+                    sincronizarDados();
+                }
+            }
+        });
+    });
+
+    // NOVA FUNÇÃO DE ENVIO PARA O GOOGLE APPS SCRIPT EXTERNO
+    function enviarParaAppsScript(dadosJSONStr) {
+        // ========== ATENÇÃO: COLOQUE SEU LINK AQUI ==========
+        // Cole abaixo o URL do "App da Web" gerado no seu Google Apps Script
+        const URL_APPS_SCRIPT = "COLE_AQUI_O_URL_DO_SEU_WEB_APP_DO_GOOGLE";
+        
+        return fetch(URL_APPS_SCRIPT, {
+            method: 'POST',
+            body: dadosJSONStr,
+            headers: {
+                "Content-Type": "text/plain;charset=utf-8"
+            }
+        })
+        .then(response => response.text());
+    }
+
+    async function sincronizarDados() {
+        if (!navigator.onLine) {
+            alert("❌ Você está sem internet. Conecte-se ao Wi-Fi ou 4G para sincronizar.");
+            return;
+        }
+
+        let fila = await localforage.getItem('fila_checklists') || [];
+        if (fila.length === 0) return;
+
+        document.getElementById('loadingOverlay').style.display = 'flex';
+        
+        let pendentesFalhos = [];
+        let qtdeSucesso = 0;
+
+        for (let i = 0; i < fila.length; i++) {
+            let dados = fila[i];
+            document.getElementById('loadingText').innerHTML = `Sincronizando ${i + 1} de ${fila.length}...<br><small style="font-size:12px; font-weight:normal;">Não feche a página.</small>`;
+            
+            try {
+                let dadosStr = JSON.stringify(dados);
+                let resposta = await enviarParaAppsScript(dadosStr);
+
+                if (resposta === "Sucesso") {
+                    qtdeSucesso++;
+                } else {
+                    console.error("Erro do servidor:", resposta);
+                    pendentesFalhos.push(dados);
+                }
+            } catch (err) {
+                console.error("Erro de conexão:", err);
+                pendentesFalhos.push(dados);
+            }
+        }
+
+        await localforage.setItem('fila_checklists', pendentesFalhos);
+        await atualizarBannerSync();
+        
+        document.getElementById('loadingOverlay').style.display = 'none';
+
+        if (pendentesFalhos.length === 0) {
+            alert("🚀 Todos os dados (" + qtdeSucesso + ") foram sincronizados com a Planilha e os PDFs gerados com sucesso!");
+        } else {
+            alert("⚠️ " + qtdeSucesso + " formulário(s) foram enviados.\nMas " + pendentesFalhos.length + " falharam. Verifique se colou a URL correta no código e tente novamente.");
+        }
+    }
+</script>
+</body>
+</html>
